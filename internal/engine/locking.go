@@ -1,7 +1,11 @@
 package engine
 
-type Locking struct{}
+import (
+	"context"
 
-func NewLocking() *Locking {
-	return &Locking{}
+	"github.com/souravkumardubey/PayLedger/internal/domain"
+)
+
+type LockingStrategy interface {
+	ReadAccounts(ctx context.Context, ids []string) ([]*domain.Account, error)
 }
