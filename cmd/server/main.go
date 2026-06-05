@@ -53,7 +53,7 @@ func main() {
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
-	rl := api.NewRateLimiter(10, 20)
+	rl := api.NewTokenBucket(10, 20)
 	defer rl.Stop()
 
 	wrapped := api.RateLimit(rl, mux, logger)

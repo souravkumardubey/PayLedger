@@ -7,49 +7,53 @@ import (
 	"time"
 )
 
+type Limiter interface {
+	Allow(key string) bool
+}
+
 type bucket struct {
 	tokens    float64
 	lastCheck time.Time
 }
 
-type RateLimiter struct {
-	mu       sync.Mutex
-	buckets  map[string]*bucket
-	rate     float64
-	burst    int
-	stopCh   chan struct{}
+type TokenBucketLimiter struct {
+	mu      sync.Mutex
+	buckets map[string]*bucket
+	rate    float64
+	burst   int
+	stopCh  chan struct{}
 }
 
-func NewRateLimiter(rate float64, burst int) *RateLimiter {
-	rl := &RateLimiter{
+func NewTokenBucket(rate float64, burst int) *TokenBucketLimiter {
+	tb := &TokenBucketLimiter{
 		buckets: make(map[string]*bucket),
 		rate:    rate,
 		burst:   burst,
 		stopCh:  make(chan struct{}),
 	}
-	go rl.cleanup(10 * time.Minute)
-	return rl
+	go tb.cleanup(10 * time.Minute)
+	return tb
 }
 
-func (rl *RateLimiter) Stop() {
-	close(rl.stopCh)
+func (tb *TokenBucketLimiter) Stop() {
+	close(tb.stopCh)
 }
 
-func (rl *RateLimiter) Allow(key string) bool {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
+func (tb *TokenBucketLimiter) Allow(key string) bool {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
 
-	b, ok := rl.buckets[key]
+	b, ok := tb.buckets[key]
 	if !ok {
-		rl.buckets[key] = &bucket{tokens: float64(rl.burst), lastCheck: time.Now()}
+		tb.buckets[key] = &bucket{tokens: float64(tb.burst), lastCheck: time.Now()}
 		return true
 	}
 
 	now := time.Now()
 	elapsed := now.Sub(b.lastCheck).Seconds()
-	b.tokens += elapsed * rl.rate
-	if b.tokens > float64(rl.burst) {
-		b.tokens = float64(rl.burst)
+	b.tokens += elapsed * tb.rate
+	if b.tokens > float64(tb.burst) {
+		b.tokens = float64(tb.burst)
 	}
 	b.lastCheck = now
 
@@ -60,30 +64,30 @@ func (rl *RateLimiter) Allow(key string) bool {
 	return true
 }
 
-func (rl *RateLimiter) cleanup(interval time.Duration) {
+func (tb *TokenBucketLimiter) cleanup(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			rl.mu.Lock()
+			tb.mu.Lock()
 			now := time.Now()
-			for ip, b := range rl.buckets {
+			for ip, b := range tb.buckets {
 				if now.Sub(b.lastCheck) > 2*interval {
-					delete(rl.buckets, ip)
+					delete(tb.buckets, ip)
 				}
 			}
-			rl.mu.Unlock()
-		case <-rl.stopCh:
+			tb.mu.Unlock()
+		case <-tb.stopCh:
 			return
 		}
 	}
 }
 
-func RateLimit(rl *RateLimiter, next http.Handler, logger *slog.Logger) http.Handler {
+func RateLimit(limiter Limiter, next http.Handler, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := r.RemoteAddr
-		if !rl.Allow(ip) {
+		if !limiter.Allow(ip) {
 			logger.Warn("rate limit exceeded", "ip", ip, "path", r.URL.Path)
 			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 			return
