@@ -755,3 +755,184 @@ func TestEngine_MaxRetriesExhausted(t *testing.T) {
 		t.Errorf("expected %d calls (max retries), got %d", expected, callCount)
 	}
 }
+
+func TestEngine_ReverseTransfer(t *testing.T) {
+	from := newTestAccount("from-1", "user-1", 50000, domain.CurrencyINR)
+	to := newTestAccount("to-1", "user-2", 50000, domain.CurrencyINR)
+
+	original := &domain.Transaction{
+		ID:             "orig-tx",
+		Type:           domain.TransactionTypeTransfer,
+		Status:         domain.TransactionStatusCompleted,
+		IdempotencyKey: "orig-key",
+		Entries: []domain.LedgerEntry{
+			{AccountID: "from-1", Direction: domain.DirectionDebit, Amount: 50000, Currency: domain.CurrencyINR},
+			{AccountID: "to-1", Direction: domain.DirectionCredit, Amount: 50000, Currency: domain.CurrencyINR},
+		},
+	}
+
+	txnRepo := &mockTxnRepo{
+		getByIDFunc: func(ctx context.Context, id string) (*domain.Transaction, error) {
+			return original, nil
+		},
+		getByIdempotencyKeyFunc: func(ctx context.Context, key string) (*domain.Transaction, error) {
+			return nil, domain.ErrTransactionNotFound
+		},
+	}
+
+	wal := &mockWAL{
+		appendFunc:        func(ctx context.Context, entry *WALEntry) error { return nil },
+		markCommittedFunc: func(ctx context.Context, id string) error { return nil },
+	}
+
+	accounts := map[string]*domain.Account{"from-1": from, "to-1": to}
+	accountRepo := &mockAccountRepo{
+		updateBalanceFunc: func(ctx context.Context, acct *domain.Account) error { return nil },
+	}
+	locker := &mockLocker{
+		readAccountsFunc: func(ctx context.Context, ids []string) (context.Context, []*domain.Account, error) {
+			result := make([]*domain.Account, len(ids))
+			for i, id := range ids {
+				result[i] = accounts[id]
+			}
+			return ctx, result, nil
+		},
+	}
+
+	eng := New(accountRepo, txnRepo, locker, NewIdempotency(txnRepo), wal)
+
+	result, err := eng.ReverseTransaction(context.Background(), "orig-tx", "rev-key")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if from.Balance != 100000 {
+		t.Errorf("from balance: expected 100000, got %d", from.Balance)
+	}
+	if to.Balance != 0 {
+		t.Errorf("to balance: expected 0, got %d", to.Balance)
+	}
+}
+
+func TestEngine_ReverseDeposit(t *testing.T) {
+	acc := newTestAccount("acc-1", "user-1", 100000, domain.CurrencyINR)
+
+	original := &domain.Transaction{
+		ID:             "dep-tx",
+		Type:           domain.TransactionTypeCredit,
+		Status:         domain.TransactionStatusCompleted,
+		IdempotencyKey: "dep-key",
+		Entries: []domain.LedgerEntry{
+			{AccountID: "acc-1", Direction: domain.DirectionCredit, Amount: 50000, Currency: domain.CurrencyINR},
+		},
+	}
+
+	txnRepo := &mockTxnRepo{
+		getByIDFunc: func(ctx context.Context, id string) (*domain.Transaction, error) {
+			return original, nil
+		},
+		getByIdempotencyKeyFunc: func(ctx context.Context, key string) (*domain.Transaction, error) {
+			return nil, domain.ErrTransactionNotFound
+		},
+	}
+
+	wal := &mockWAL{
+		appendFunc:        func(ctx context.Context, entry *WALEntry) error { return nil },
+		markCommittedFunc: func(ctx context.Context, id string) error { return nil },
+	}
+
+	accountRepo := &mockAccountRepo{
+		updateBalanceFunc: func(ctx context.Context, acct *domain.Account) error { return nil },
+	}
+	locker := &mockLocker{
+		readAccountsFunc: func(ctx context.Context, ids []string) (context.Context, []*domain.Account, error) {
+			return ctx, []*domain.Account{acc}, nil
+		},
+	}
+
+	eng := New(accountRepo, txnRepo, locker, NewIdempotency(txnRepo), wal)
+
+	result, err := eng.ReverseTransaction(context.Background(), "dep-tx", "rev-dep")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if acc.Balance != 50000 {
+		t.Errorf("balance: expected 50000 (deposit reversed), got %d", acc.Balance)
+	}
+}
+
+func TestEngine_ReverseWithdrawal(t *testing.T) {
+	acc := newTestAccount("acc-1", "user-1", 10000, domain.CurrencyINR)
+
+	original := &domain.Transaction{
+		ID:             "wd-tx",
+		Type:           domain.TransactionTypeDebit,
+		Status:         domain.TransactionStatusCompleted,
+		IdempotencyKey: "wd-key",
+		Entries: []domain.LedgerEntry{
+			{AccountID: "acc-1", Direction: domain.DirectionDebit, Amount: 5000, Currency: domain.CurrencyINR},
+		},
+	}
+
+	txnRepo := &mockTxnRepo{
+		getByIDFunc: func(ctx context.Context, id string) (*domain.Transaction, error) {
+			return original, nil
+		},
+		getByIdempotencyKeyFunc: func(ctx context.Context, key string) (*domain.Transaction, error) {
+			return nil, domain.ErrTransactionNotFound
+		},
+	}
+
+	wal := &mockWAL{
+		appendFunc:        func(ctx context.Context, entry *WALEntry) error { return nil },
+		markCommittedFunc: func(ctx context.Context, id string) error { return nil },
+	}
+
+	accountRepo := &mockAccountRepo{
+		updateBalanceFunc: func(ctx context.Context, acct *domain.Account) error { return nil },
+	}
+	locker := &mockLocker{
+		readAccountsFunc: func(ctx context.Context, ids []string) (context.Context, []*domain.Account, error) {
+			return ctx, []*domain.Account{acc}, nil
+		},
+	}
+
+	eng := New(accountRepo, txnRepo, locker, NewIdempotency(txnRepo), wal)
+
+	result, err := eng.ReverseTransaction(context.Background(), "wd-tx", "rev-wd")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if acc.Balance != 15000 {
+		t.Errorf("balance: expected 15000 (withdrawal reversed), got %d", acc.Balance)
+	}
+}
+
+func TestEngine_ReverseNoEntries(t *testing.T) {
+	original := &domain.Transaction{
+		ID:     "empty-tx",
+		Type:   domain.TransactionTypeCredit,
+		Status: domain.TransactionStatusCompleted,
+	}
+
+	txnRepo := &mockTxnRepo{
+		getByIDFunc: func(ctx context.Context, id string) (*domain.Transaction, error) {
+			return original, nil
+		},
+	}
+
+	eng := New(&mockAccountRepo{}, txnRepo, &mockLocker{}, NewIdempotency(txnRepo), &mockWAL{})
+
+	_, err := eng.ReverseTransaction(context.Background(), "empty-tx", "rev-empty")
+	if !errors.Is(err, domain.ErrInvalidReversal) {
+		t.Errorf("expected ErrInvalidReversal, got %v", err)
+	}
+}

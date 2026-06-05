@@ -31,6 +31,8 @@ func errorStatus(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, domain.ErrAccountFrozen), errors.Is(err, domain.ErrAccountClosed):
 		return http.StatusForbidden
+	case errors.Is(err, domain.ErrInvalidReversal):
+		return http.StatusUnprocessableEntity
 	default:
 		return http.StatusInternalServerError
 	}

@@ -75,36 +75,44 @@ func (e *Engine) ReverseTransaction(ctx context.Context, originalTxID string, id
 		return nil, err
 	}
 
-	if len(original.Entries) != 2 {
-		return nil, nil
+	if len(original.Entries) == 0 {
+		return nil, domain.ErrInvalidReversal
+	}
+
+	if len(original.Entries) == 1 {
+		entry := original.Entries[0]
+		req := DepositRequest{
+			AccountID:      entry.AccountID,
+			Amount:         entry.Amount,
+			Currency:       entry.Currency,
+			IdempotencyKey: idempotencyKey,
+		}
+		switch entry.Direction {
+		case domain.DirectionCredit:
+			return e.execute(ctx, NewWithdrawOperation(req))
+		case domain.DirectionDebit:
+			return e.execute(ctx, NewDepositOperation(req))
+		default:
+			return nil, domain.ErrInvalidReversal
+		}
 	}
 
 	fromEntry, toEntry := original.Entries[0], original.Entries[1]
 
-	fromID := ""
-	toID := ""
-	var amount int64
-	var currency domain.Currency
-
+	fromID := fromEntry.AccountID
+	toID := toEntry.AccountID
 	if fromEntry.Direction == domain.DirectionDebit {
-		fromID = fromEntry.AccountID
-		toID = toEntry.AccountID
-	} else {
-		fromID = toEntry.AccountID
-		toID = fromEntry.AccountID
+		fromID, toID = toEntry.AccountID, fromEntry.AccountID
 	}
-	amount = fromEntry.Amount
-	currency = fromEntry.Currency
 
 	req := TransferRequest{
-		FromAccountID:  toID,
-		ToAccountID:    fromID,
-		Amount:         amount,
-		Currency:       currency,
+		FromAccountID:  fromID,
+		ToAccountID:    toID,
+		Amount:         fromEntry.Amount,
+		Currency:       fromEntry.Currency,
 		IdempotencyKey: idempotencyKey,
 	}
-	op := NewTransferOperation(req)
-	return e.execute(ctx, op)
+	return e.execute(ctx, NewTransferOperation(req))
 }
 
 func (e *Engine) execute(ctx context.Context, op Operation) (txResult *domain.Transaction, err error) {

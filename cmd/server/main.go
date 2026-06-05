@@ -53,7 +53,11 @@ func main() {
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
-	wrapped := api.WrapHandler(mux, logger)
+	rl := api.NewRateLimiter(10, 20)
+	defer rl.Stop()
+
+	wrapped := api.RateLimit(rl, mux, logger)
+	wrapped = api.WrapHandler(wrapped, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,

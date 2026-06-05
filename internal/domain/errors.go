@@ -13,4 +13,5 @@ var (
 	ErrDuplicateTransaction = errors.New("duplicate idempotency key")
 	ErrTransactionNotFound  = errors.New("transaction not found")
 	ErrVersionConflict      = errors.New("optimistic lock version conflict")
+	ErrInvalidReversal      = errors.New("cannot reverse this transaction")
 )
