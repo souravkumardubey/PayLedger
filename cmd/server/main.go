@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,16 +18,21 @@ import (
 func main() {
 	cfg := config.Load()
 
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	slog.SetDefault(logger)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	db, err := postgres.New(ctx, cfg.Database.DSN)
 	if err != nil {
-		log.Fatalf("database: %v", err)
+		logger.Error("database", "error", err)
+		os.Exit(1)
 	}
 
 	if err := db.RunMigrations(ctx); err != nil {
-		log.Fatalf("migrations: %v", err)
+		logger.Error("migrations", "error", err)
+		os.Exit(1)
 	}
 
 	accountRepo := postgres.NewAccountRepo(db)
@@ -35,7 +40,8 @@ func main() {
 	walStore := postgres.NewWALStore(db)
 
 	if err := engine.RecoverWAL(ctx, walStore, txnRepo); err != nil {
-		log.Fatalf("WAL recovery: %v", err)
+		logger.Error("WAL recovery", "error", err)
+		os.Exit(1)
 	}
 
 	locker := engine.NewPessimisticLock(db.Pool)
@@ -47,7 +53,7 @@ func main() {
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
-	wrapped := api.Logging(mux)
+	wrapped := api.WrapHandler(mux, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -61,16 +67,17 @@ func main() {
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 
-		log.Println("shutting down...")
+		logger.Info("shutting down...")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		srv.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("listening on :%s", cfg.Server.Port)
+	logger.Info("listening", "port", cfg.Server.Port)
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-		log.Fatalf("server: %v", err)
+		logger.Error("server", "error", err)
+		os.Exit(1)
 	}
 
 	db.Close()

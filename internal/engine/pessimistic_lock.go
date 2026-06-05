@@ -2,7 +2,9 @@ package engine
 
 import (
 	"context"
+	"errors"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/souravkumardubey/PayLedger/internal/domain"
@@ -37,7 +39,6 @@ func (l *PessimisticLock) ReadAccounts(ctx context.Context, ids []string) (conte
 			&acct.CreatedAt, &acct.UpdatedAt,
 		)
 		if err != nil {
-			tx.Rollback(ctx)
 			return ctx, nil, err
 		}
 		accounts[i] = acct
@@ -51,7 +52,11 @@ func (l *PessimisticLock) Commit(ctx context.Context) error {
 	if !ok {
 		return nil
 	}
-	return tx.Commit(ctx)
+	err := tx.Commit(ctx)
+	if errors.Is(err, pgx.ErrTxClosed) {
+		return nil
+	}
+	return err
 }
 
 func (l *PessimisticLock) Rollback(ctx context.Context) error {
@@ -59,5 +64,9 @@ func (l *PessimisticLock) Rollback(ctx context.Context) error {
 	if !ok {
 		return nil
 	}
-	return tx.Rollback(ctx)
+	err := tx.Rollback(ctx)
+	if errors.Is(err, pgx.ErrTxClosed) {
+		return nil
+	}
+	return err
 }

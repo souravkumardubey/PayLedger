@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"log/slog"
+	"time"
 
 	"github.com/souravkumardubey/PayLedger/internal/domain"
 	"github.com/souravkumardubey/PayLedger/internal/repository"
@@ -30,6 +32,8 @@ type Engine struct {
 	locker          LockingStrategy
 	idempotency     *Idempotency
 	wal             WALStore
+	retryCfg        RetryConfig
+	logger          *slog.Logger
 }
 
 func New(
@@ -45,6 +49,8 @@ func New(
 		locker:          locker,
 		idempotency:     idempotency,
 		wal:             wal,
+		retryCfg:        DefaultRetryConfig(),
+		logger:          slog.Default(),
 	}
 }
 
@@ -105,9 +111,38 @@ func (e *Engine) execute(ctx context.Context, op Operation) (txResult *domain.Tr
 	if existing, err := e.idempotency.Check(ctx, op.IdempotencyKey()); err != nil {
 		return nil, err
 	} else if existing != nil {
+		e.logger.Debug("idempotent request", "key", op.IdempotencyKey())
 		return existing, nil
 	}
 
+	var lastErr error
+	for attempt := 0; attempt <= e.retryCfg.MaxRetries; attempt++ {
+		if attempt > 0 {
+			delay := retryBackoff(e.retryCfg, attempt-1)
+			e.logger.Info("retrying transaction",
+				"attempt", attempt,
+				"reason", lastErr.Error(),
+				"delay", delay,
+			)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+
+		txResult, lastErr = e.executeOnce(ctx, op)
+		if lastErr == nil {
+			return txResult, nil
+		}
+		if !isRetryableError(lastErr) {
+			return nil, lastErr
+		}
+	}
+	return nil, lastErr
+}
+
+func (e *Engine) executeOnce(ctx context.Context, op Operation) (txResult *domain.Transaction, err error) {
 	walEntry := NewWALEntry(op)
 	if err := e.wal.Append(ctx, walEntry); err != nil {
 		return nil, err
@@ -117,9 +152,19 @@ func (e *Engine) execute(ctx context.Context, op Operation) (txResult *domain.Tr
 		if err != nil {
 			e.locker.Rollback(ctx)
 			e.wal.MarkRolledBack(ctx, walEntry.ID)
+			e.logger.Warn("transaction rolled back",
+				"wal_id", walEntry.ID,
+				"type", op.Type(),
+				"error", err,
+			)
 		} else {
 			e.locker.Commit(ctx)
 			e.wal.MarkCommitted(ctx, walEntry.ID)
+			e.logger.Info("transaction committed",
+				"wal_id", walEntry.ID,
+				"type", op.Type(),
+				"idempotency_key", op.IdempotencyKey(),
+			)
 		}
 	}()
 

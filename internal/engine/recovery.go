@@ -3,7 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 
 	"github.com/souravkumardubey/PayLedger/internal/domain"
 	"github.com/souravkumardubey/PayLedger/internal/repository"
@@ -21,19 +21,25 @@ func RecoverWAL(ctx context.Context, wal WALStore, txnRepo repository.Transactio
 			if err := wal.MarkCommitted(ctx, entry.ID); err != nil {
 				return err
 			}
-			log.Printf("WAL recovery: entry %s (%s) → COMMITTED", entry.ID[:8], entry.OperationType)
+			slog.Default().Info("WAL recovery entry committed",
+				"wal_id", entry.ID[:8],
+				"type", entry.OperationType,
+			)
 		} else if errors.Is(err, domain.ErrTransactionNotFound) {
 			if err := wal.MarkRolledBack(ctx, entry.ID); err != nil {
 				return err
 			}
-			log.Printf("WAL recovery: entry %s (%s) → ROLLED_BACK", entry.ID[:8], entry.OperationType)
+			slog.Default().Info("WAL recovery entry rolled back",
+				"wal_id", entry.ID[:8],
+				"type", entry.OperationType,
+			)
 		} else {
 			return err
 		}
 	}
 
 	if len(entries) == 0 {
-		log.Println("WAL recovery: no pending entries found")
+		slog.Default().Info("WAL recovery: no pending entries found")
 	}
 
 	return nil

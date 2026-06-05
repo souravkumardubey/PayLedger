@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/souravkumardubey/PayLedger/internal/domain"
 )
 
@@ -592,5 +594,164 @@ func TestEngine_FrozenAccount(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for frozen account")
+	}
+}
+
+func TestEngine_RetryOnDeadlock(t *testing.T) {
+	acc := newTestAccount("acc-1", "user-1", 100000, domain.CurrencyINR)
+
+	callCount := 0
+	locker := &mockLocker{
+		readAccountsFunc: func(ctx context.Context, ids []string) (context.Context, []*domain.Account, error) {
+			callCount++
+			if callCount == 1 {
+				return ctx, nil, &pgconn.PgError{Code: "40P01", Message: "deadlock detected"}
+			}
+			return ctx, []*domain.Account{acc}, nil
+		},
+		commitFunc:   func(ctx context.Context) error { return nil },
+		rollbackFunc: func(ctx context.Context) error { return nil },
+	}
+
+	txnRepo := &mockTxnRepo{
+		getByIdempotencyKeyFunc: func(ctx context.Context, key string) (*domain.Transaction, error) {
+			return nil, domain.ErrTransactionNotFound
+		},
+	}
+	wal := &mockWAL{
+		appendFunc:         func(ctx context.Context, entry *WALEntry) error { return nil },
+		markCommittedFunc:  func(ctx context.Context, id string) error { return nil },
+		markRolledBackFunc: func(ctx context.Context, id string) error { return nil },
+	}
+
+	eng := New(&mockAccountRepo{}, txnRepo, locker, NewIdempotency(txnRepo), wal)
+
+	_, err := eng.Deposit(context.Background(), DepositRequest{
+		AccountID:      "acc-1",
+		Amount:         100000,
+		Currency:       domain.CurrencyINR,
+		IdempotencyKey: "dep-retry",
+	})
+	if err != nil {
+		t.Fatalf("expected success after retry, got: %v", err)
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 calls (1 retry), got %d", callCount)
+	}
+}
+
+func TestEngine_RetryOnSerializationFailure(t *testing.T) {
+	acc := newTestAccount("acc-1", "user-1", 100000, domain.CurrencyINR)
+
+	callCount := 0
+	locker := &mockLocker{
+		readAccountsFunc: func(ctx context.Context, ids []string) (context.Context, []*domain.Account, error) {
+			callCount++
+			if callCount <= 2 {
+				return ctx, nil, &pgconn.PgError{Code: "40001", Message: "serialization failure"}
+			}
+			return ctx, []*domain.Account{acc}, nil
+		},
+		commitFunc:   func(ctx context.Context) error { return nil },
+		rollbackFunc: func(ctx context.Context) error { return nil },
+	}
+
+	txnRepo := &mockTxnRepo{
+		getByIdempotencyKeyFunc: func(ctx context.Context, key string) (*domain.Transaction, error) {
+			return nil, domain.ErrTransactionNotFound
+		},
+	}
+	wal := &mockWAL{
+		appendFunc:         func(ctx context.Context, entry *WALEntry) error { return nil },
+		markCommittedFunc:  func(ctx context.Context, id string) error { return nil },
+		markRolledBackFunc: func(ctx context.Context, id string) error { return nil },
+	}
+
+	eng := New(&mockAccountRepo{}, txnRepo, locker, NewIdempotency(txnRepo), wal)
+
+	_, err := eng.Deposit(context.Background(), DepositRequest{
+		AccountID:      "acc-1",
+		Amount:         100000,
+		Currency:       domain.CurrencyINR,
+		IdempotencyKey: "dep-retry-ser",
+	})
+	if err != nil {
+		t.Fatalf("expected success after retries, got: %v", err)
+	}
+	if callCount != 3 {
+		t.Errorf("expected 3 calls (2 retries), got %d", callCount)
+	}
+}
+
+func TestEngine_NonRetryableErrorNotRetried(t *testing.T) {
+	callCount := 0
+	locker := &mockLocker{
+		readAccountsFunc: func(ctx context.Context, ids []string) (context.Context, []*domain.Account, error) {
+			callCount++
+			return ctx, nil, &pgconn.PgError{Code: "23505", Message: "unique violation"}
+		},
+		rollbackFunc: func(ctx context.Context) error { return nil },
+	}
+
+	txnRepo := &mockTxnRepo{
+		getByIdempotencyKeyFunc: func(ctx context.Context, key string) (*domain.Transaction, error) {
+			return nil, domain.ErrTransactionNotFound
+		},
+	}
+	wal := &mockWAL{
+		appendFunc:         func(ctx context.Context, entry *WALEntry) error { return nil },
+		markRolledBackFunc: func(ctx context.Context, id string) error { return nil },
+	}
+
+	eng := New(&mockAccountRepo{}, txnRepo, locker, NewIdempotency(txnRepo), wal)
+
+	_, err := eng.Deposit(context.Background(), DepositRequest{
+		AccountID:      "acc-1",
+		Amount:         100000,
+		Currency:       domain.CurrencyINR,
+		IdempotencyKey: "dep-no-retry",
+	})
+	if err == nil {
+		t.Fatal("expected error for non-retryable PG error")
+	}
+	if callCount != 1 {
+		t.Errorf("expected only 1 call (no retry), got %d", callCount)
+	}
+}
+
+func TestEngine_MaxRetriesExhausted(t *testing.T) {
+	callCount := 0
+	locker := &mockLocker{
+		readAccountsFunc: func(ctx context.Context, ids []string) (context.Context, []*domain.Account, error) {
+			callCount++
+			return ctx, nil, &pgconn.PgError{Code: "40P01", Message: "deadlock detected"}
+		},
+		rollbackFunc: func(ctx context.Context) error { return nil },
+	}
+
+	txnRepo := &mockTxnRepo{
+		getByIdempotencyKeyFunc: func(ctx context.Context, key string) (*domain.Transaction, error) {
+			return nil, domain.ErrTransactionNotFound
+		},
+	}
+	wal := &mockWAL{
+		appendFunc:         func(ctx context.Context, entry *WALEntry) error { return nil },
+		markRolledBackFunc: func(ctx context.Context, id string) error { return nil },
+	}
+
+	eng := New(&mockAccountRepo{}, txnRepo, locker, NewIdempotency(txnRepo), wal)
+
+	_, err := eng.Deposit(context.Background(), DepositRequest{
+		AccountID:      "acc-1",
+		Amount:         100000,
+		Currency:       domain.CurrencyINR,
+		IdempotencyKey: "dep-exhausted",
+	})
+	if err == nil {
+		t.Fatal("expected error after exhausting retries")
+	}
+	expected := eng.retryCfg.MaxRetries + 1
+	if callCount != expected {
+		t.Errorf("expected %d calls (max retries), got %d", expected, callCount)
 	}
 }
