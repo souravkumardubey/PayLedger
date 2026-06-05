@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -26,6 +27,11 @@ func (op *TransferOperation) IdempotencyKey() string {
 
 func (op *TransferOperation) AccountIDs() []string {
 	return []string{op.Request.FromAccountID, op.Request.ToAccountID}
+}
+
+func (op *TransferOperation) RequestData() json.RawMessage {
+	data, _ := json.Marshal(op.Request)
+	return data
 }
 
 func (op *TransferOperation) Validate(ctx context.Context, accounts []*domain.Account) error {
