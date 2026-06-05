@@ -82,6 +82,21 @@ CREATE INDEX IF NOT EXISTS idx_ledger_entries_transaction ON ledger_entries(tran
 CREATE INDEX IF NOT EXISTS idx_ledger_entries_account ON ledger_entries(account_id);
 `
 
+const migrationWAL = `
+CREATE TABLE IF NOT EXISTS wal_entries (
+    id              TEXT         PRIMARY KEY,
+    idempotency_key TEXT         NOT NULL,
+    operation_type  TEXT         NOT NULL,
+    request_data    JSONB        NOT NULL,
+    status          TEXT         NOT NULL DEFAULT 'PENDING',
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    committed_at    TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_wal_status ON wal_entries(status);
+CREATE INDEX IF NOT EXISTS idx_wal_idempotency ON wal_entries(idempotency_key);
+`
+
 func (db *DB) RunMigrations(ctx context.Context) error {
 	migrations := []struct {
 		name string
@@ -89,6 +104,7 @@ func (db *DB) RunMigrations(ctx context.Context) error {
 	}{
 		{"001_create_accounts", migrationAccounts},
 		{"002_create_transactions", migrationTransactions},
+		{"003_create_wal", migrationWAL},
 	}
 
 	for _, m := range migrations {
