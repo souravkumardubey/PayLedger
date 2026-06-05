@@ -38,7 +38,7 @@ func main() {
 		log.Fatalf("WAL recovery: %v", err)
 	}
 
-	locker := engine.NewOptimisticLock(accountRepo)
+	locker := engine.NewPessimisticLock(db.Pool)
 	idempotency := engine.NewIdempotency(txnRepo)
 	eng := engine.New(accountRepo, txnRepo, locker, idempotency, walStore)
 

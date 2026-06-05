@@ -24,7 +24,7 @@ func (r *AccountRepo) Create(ctx context.Context, account *domain.Account) error
 		INSERT INTO accounts (id, user_id, type, currency, balance, version, status, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
 
-	_, err := r.db.Pool.Exec(ctx, query,
+	_, err := r.db.q(ctx).Exec(ctx, query,
 		account.ID, account.UserID, account.Type, account.Currency,
 		account.Balance, account.Version, account.Status,
 		account.CreatedAt, account.UpdatedAt,
@@ -46,7 +46,7 @@ func (r *AccountRepo) GetByID(ctx context.Context, id string) (*domain.Account, 
 		FROM accounts WHERE id = $1`
 
 	account := &domain.Account{}
-	err := r.db.Pool.QueryRow(ctx, query, id).Scan(
+	err := r.db.q(ctx).QueryRow(ctx, query, id).Scan(
 		&account.ID, &account.UserID, &account.Type, &account.Currency,
 		&account.Balance, &account.Version, &account.Status,
 		&account.CreatedAt, &account.UpdatedAt,
@@ -68,7 +68,7 @@ func (r *AccountRepo) UpdateBalance(ctx context.Context, account *domain.Account
 		WHERE id = $3 AND version = $4`
 
 	now := time.Now()
-	tag, err := r.db.Pool.Exec(ctx, query, account.Balance, now, account.ID, account.Version)
+	tag, err := r.db.q(ctx).Exec(ctx, query, account.Balance, now, account.ID, account.Version)
 	if err != nil {
 		return err
 	}

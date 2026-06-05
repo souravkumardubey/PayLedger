@@ -7,5 +7,7 @@ import (
 )
 
 type LockingStrategy interface {
-	ReadAccounts(ctx context.Context, ids []string) ([]*domain.Account, error)
+	ReadAccounts(ctx context.Context, ids []string) (context.Context, []*domain.Account, error)
+	Commit(ctx context.Context) error
+	Rollback(ctx context.Context) error
 }

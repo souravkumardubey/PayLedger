@@ -15,14 +15,22 @@ func NewOptimisticLock(repo repository.AccountRepository) *OptimisticLock {
 	return &OptimisticLock{repo: repo}
 }
 
-func (l *OptimisticLock) ReadAccounts(ctx context.Context, ids []string) ([]*domain.Account, error) {
+func (l *OptimisticLock) ReadAccounts(ctx context.Context, ids []string) (context.Context, []*domain.Account, error) {
 	accounts := make([]*domain.Account, len(ids))
 	for i, id := range ids {
 		acct, err := l.repo.GetByID(ctx, id)
 		if err != nil {
-			return nil, err
+			return ctx, nil, err
 		}
 		accounts[i] = acct
 	}
-	return accounts, nil
+	return ctx, accounts, nil
+}
+
+func (l *OptimisticLock) Commit(ctx context.Context) error {
+	return nil
+}
+
+func (l *OptimisticLock) Rollback(ctx context.Context) error {
+	return nil
 }

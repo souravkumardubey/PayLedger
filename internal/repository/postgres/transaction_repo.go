@@ -24,7 +24,7 @@ func (r *TransactionRepo) Create(ctx context.Context, tx *domain.Transaction) er
 		INSERT INTO transactions (id, idempotency_key, type, status, metadata, created_at, completed_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)`
 
-	_, err := r.db.Pool.Exec(ctx, txQuery,
+	_, err := r.db.q(ctx).Exec(ctx, txQuery,
 		tx.ID, tx.IdempotencyKey, tx.Type, tx.Status,
 		tx.Metadata, tx.CreatedAt, tx.CompletedAt,
 	)
@@ -48,7 +48,7 @@ func (r *TransactionRepo) insertEntries(ctx context.Context, txID string, entrie
 		VALUES ($1, $2, $3, $4, $5, $6, $7)`
 
 	for _, e := range entries {
-		_, err := r.db.Pool.Exec(ctx, query,
+		_, err := r.db.q(ctx).Exec(ctx, query,
 			e.ID, txID, e.AccountID, e.Direction, e.Amount, e.Currency, e.BalanceSnapshot,
 		)
 		if err != nil {
@@ -64,7 +64,7 @@ func (r *TransactionRepo) GetByID(ctx context.Context, id string) (*domain.Trans
 		FROM transactions WHERE id = $1`
 
 	tx := &domain.Transaction{}
-	err := r.db.Pool.QueryRow(ctx, query, id).Scan(
+	err := r.db.q(ctx).QueryRow(ctx, query, id).Scan(
 		&tx.ID, &tx.IdempotencyKey, &tx.Type, &tx.Status,
 		&tx.Metadata, &tx.CreatedAt, &tx.CompletedAt,
 	)
@@ -94,7 +94,7 @@ func (r *TransactionRepo) GetByIdempotencyKey(ctx context.Context, key string) (
 		FROM transactions WHERE idempotency_key = $1`
 
 	tx := &domain.Transaction{}
-	err := r.db.Pool.QueryRow(ctx, query, key).Scan(
+	err := r.db.q(ctx).QueryRow(ctx, query, key).Scan(
 		&tx.ID, &tx.IdempotencyKey, &tx.Type, &tx.Status,
 		&tx.Metadata, &tx.CreatedAt, &tx.CompletedAt,
 	)
@@ -122,7 +122,7 @@ func (r *TransactionRepo) UpdateStatus(ctx context.Context, id string, status do
 	query := `UPDATE transactions SET status = $1, completed_at = $2 WHERE id = $3`
 
 	now := time.Now()
-	tag, err := r.db.Pool.Exec(ctx, query, status, now, id)
+	tag, err := r.db.q(ctx).Exec(ctx, query, status, now, id)
 	if err != nil {
 		return err
 	}
@@ -142,7 +142,7 @@ func (r *TransactionRepo) ListByAccountID(ctx context.Context, accountID string,
 		JOIN ledger_entries le ON le.transaction_id = t.id
 		WHERE le.account_id = $1`
 
-	err := r.db.Pool.QueryRow(ctx, countQuery, accountID).Scan(&total)
+	err := r.db.q(ctx).QueryRow(ctx, countQuery, accountID).Scan(&total)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -155,7 +155,7 @@ func (r *TransactionRepo) ListByAccountID(ctx context.Context, accountID string,
 		ORDER BY t.created_at DESC
 		LIMIT $2 OFFSET $3`
 
-	rows, err := r.db.Pool.Query(ctx, txQuery, accountID, limit, offset)
+	rows, err := r.db.q(ctx).Query(ctx, txQuery, accountID, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -206,7 +206,7 @@ func (r *TransactionRepo) getEntriesByTxID(ctx context.Context, txID string) ([]
 		WHERE transaction_id = $1
 		ORDER BY id`
 
-	rows, err := r.db.Pool.Query(ctx, query, txID)
+	rows, err := r.db.q(ctx).Query(ctx, query, txID)
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +233,7 @@ func (r *TransactionRepo) getEntriesByTxIDs(ctx context.Context, txIDs []string)
 		WHERE transaction_id = ANY($1)
 		ORDER BY id`
 
-	rows, err := r.db.Pool.Query(ctx, query, txIDs)
+	rows, err := r.db.q(ctx).Query(ctx, query, txIDs)
 	if err != nil {
 		return nil, err
 	}

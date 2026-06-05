@@ -101,7 +101,7 @@ func (e *Engine) ReverseTransaction(ctx context.Context, originalTxID string, id
 	return e.execute(ctx, op)
 }
 
-func (e *Engine) execute(ctx context.Context, op Operation) (*domain.Transaction, error) {
+func (e *Engine) execute(ctx context.Context, op Operation) (txResult *domain.Transaction, err error) {
 	if existing, err := e.idempotency.Check(ctx, op.IdempotencyKey()); err != nil {
 		return nil, err
 	} else if existing != nil {
@@ -113,36 +113,38 @@ func (e *Engine) execute(ctx context.Context, op Operation) (*domain.Transaction
 		return nil, err
 	}
 
-	accounts, err := e.locker.ReadAccounts(ctx, op.AccountIDs())
+	defer func() {
+		if err != nil {
+			e.locker.Rollback(ctx)
+			e.wal.MarkRolledBack(ctx, walEntry.ID)
+		} else {
+			e.locker.Commit(ctx)
+			e.wal.MarkCommitted(ctx, walEntry.ID)
+		}
+	}()
+
+	var accounts []*domain.Account
+	ctx, accounts, err = e.locker.ReadAccounts(ctx, op.AccountIDs())
 	if err != nil {
-		e.wal.MarkRolledBack(ctx, walEntry.ID)
 		return nil, err
 	}
 
 	if err := op.Validate(ctx, accounts); err != nil {
-		e.wal.MarkRolledBack(ctx, walEntry.ID)
 		return nil, err
 	}
 
 	tx, err := op.Apply(ctx, accounts)
 	if err != nil {
-		e.wal.MarkRolledBack(ctx, walEntry.ID)
 		return nil, err
 	}
 
 	for _, acct := range accounts {
 		if err := e.accountRepo.UpdateBalance(ctx, acct); err != nil {
-			e.wal.MarkRolledBack(ctx, walEntry.ID)
 			return nil, err
 		}
 	}
 
 	if err := e.transactionRepo.Create(ctx, tx); err != nil {
-		e.wal.MarkRolledBack(ctx, walEntry.ID)
-		return nil, err
-	}
-
-	if err := e.wal.MarkCommitted(ctx, walEntry.ID); err != nil {
 		return nil, err
 	}
 
