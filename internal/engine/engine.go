@@ -29,6 +29,7 @@ type Engine struct {
 	transactionRepo repository.TransactionRepository
 	locker          LockingStrategy
 	idempotency     *Idempotency
+	wal             WALStore
 }
 
 func New(
@@ -36,12 +37,14 @@ func New(
 	transactionRepo repository.TransactionRepository,
 	locker LockingStrategy,
 	idempotency *Idempotency,
+	wal WALStore,
 ) *Engine {
 	return &Engine{
 		accountRepo:     accountRepo,
 		transactionRepo: transactionRepo,
 		locker:          locker,
 		idempotency:     idempotency,
+		wal:             wal,
 	}
 }
 
@@ -105,27 +108,41 @@ func (e *Engine) execute(ctx context.Context, op Operation) (*domain.Transaction
 		return existing, nil
 	}
 
+	walEntry := NewWALEntry(op)
+	if err := e.wal.Append(ctx, walEntry); err != nil {
+		return nil, err
+	}
+
 	accounts, err := e.locker.ReadAccounts(ctx, op.AccountIDs())
 	if err != nil {
+		e.wal.MarkRolledBack(ctx, walEntry.ID)
 		return nil, err
 	}
 
 	if err := op.Validate(ctx, accounts); err != nil {
+		e.wal.MarkRolledBack(ctx, walEntry.ID)
 		return nil, err
 	}
 
 	tx, err := op.Apply(ctx, accounts)
 	if err != nil {
+		e.wal.MarkRolledBack(ctx, walEntry.ID)
 		return nil, err
 	}
 
 	for _, acct := range accounts {
 		if err := e.accountRepo.UpdateBalance(ctx, acct); err != nil {
+			e.wal.MarkRolledBack(ctx, walEntry.ID)
 			return nil, err
 		}
 	}
 
 	if err := e.transactionRepo.Create(ctx, tx); err != nil {
+		e.wal.MarkRolledBack(ctx, walEntry.ID)
+		return nil, err
+	}
+
+	if err := e.wal.MarkCommitted(ctx, walEntry.ID); err != nil {
 		return nil, err
 	}
 

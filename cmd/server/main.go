@@ -32,10 +32,15 @@ func main() {
 
 	accountRepo := postgres.NewAccountRepo(db)
 	txnRepo := postgres.NewTransactionRepo(db)
+	walStore := postgres.NewWALStore(db)
+
+	if err := engine.RecoverWAL(ctx, walStore, txnRepo); err != nil {
+		log.Fatalf("WAL recovery: %v", err)
+	}
 
 	locker := engine.NewOptimisticLock(accountRepo)
 	idempotency := engine.NewIdempotency(txnRepo)
-	eng := engine.New(accountRepo, txnRepo, locker, idempotency)
+	eng := engine.New(accountRepo, txnRepo, locker, idempotency, walStore)
 
 	handler := api.NewHandler(eng, accountRepo, txnRepo)
 
