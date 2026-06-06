@@ -115,6 +115,10 @@ func (e *Engine) ReverseTransaction(ctx context.Context, originalTxID string, id
 	return e.execute(ctx, NewTransferOperation(req))
 }
 
+// execute is the Template Method of the engine. It defines the skeleton of
+// a transaction: idempotency check → WAL append → lock accounts → validate →
+// apply → persist → WAL commit. Sub-operations (Transfer, Deposit, Withdraw)
+// plug into this flow via the Operation interface.
 func (e *Engine) execute(ctx context.Context, op Operation) (txResult *domain.Transaction, err error) {
 	if existing, err := e.idempotency.Check(ctx, op.IdempotencyKey()); err != nil {
 		return nil, err
