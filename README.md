@@ -25,6 +25,21 @@ Client → HTTP API (net/http)
         PostgreSQL (pgxpool)
 ```
 
+```mermaid
+flowchart TD
+    Client[Client] --> API[HTTP API]
+    API --> RL[Rate Limiter]
+    RL --> MW[Logging Middleware]
+    MW --> ENG[Engine]
+    ENG --> IDEMP[Idempotency Check]
+    IDEMP --> WAL[WAL Append]
+    WAL --> LOCK[Locking Strategy]
+    LOCK --> OP[Validate + Apply Operation]
+    OP --> REPO[Repositories]
+    REPO --> PG[(PostgreSQL)]
+    REPO --> WALC[WAL Commit]
+```
+
 On startup, `RecoverWAL()` reconciles any PENDING entries — if a matching transaction exists it's marked COMMITTED, otherwise ROLLED_BACK.
 
 ## Design Patterns
@@ -88,6 +103,54 @@ curl -s -X POST localhost:8080/transactions/<tx_id>/reverse \
   -d '{"idempotency_key":"rev-1"}' | jq .
 ```
 
+## Demo Walkthrough
+
+This walkthrough creates two accounts, deposits funds, transfers money, and reverses the transfer while showing the expected balance changes.
+
+```bash
+# 1. Create two accounts and capture their IDs.
+ACC1=$(curl -s -X POST localhost:8080/accounts \
+  -H 'Content-Type: application/json' \
+  -d '{"user_id":"u1","type":"CHECKING","currency":"INR"}' | jq -r '.id')
+
+ACC2=$(curl -s -X POST localhost:8080/accounts \
+  -H 'Content-Type: application/json' \
+  -d '{"user_id":"u2","type":"CHECKING","currency":"INR"}' | jq -r '.id')
+
+# 2. Deposit INR 1000 into ACC1.
+curl -s -X POST localhost:8080/deposit \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: dep-demo-1' \
+  -d "{\"to\":\"$ACC1\",\"amount\":100000,\"currency\":\"INR\"}" | jq .
+
+# Expected: ACC1 balance = 100000, ACC2 balance = 0
+curl -s localhost:8080/accounts/$ACC1/balance | jq .
+curl -s localhost:8080/accounts/$ACC2/balance | jq .
+
+# 3. Transfer INR 500 from ACC1 to ACC2.
+TX_ID=$(curl -s -X POST localhost:8080/transfer \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: tx-demo-1' \
+  -d "{\"from\":\"$ACC1\",\"to\":\"$ACC2\",\"amount\":50000,\"currency\":\"INR\"}" | jq -r '.transaction_id')
+
+# Expected: ACC1 balance = 50000, ACC2 balance = 50000
+curl -s localhost:8080/accounts/$ACC1/balance | jq .
+curl -s localhost:8080/accounts/$ACC2/balance | jq .
+
+# 4. Reverse that transfer.
+curl -s -X POST localhost:8080/transactions/$TX_ID/reverse \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: rev-demo-1' \
+  -d '{"idempotency_key":"rev-demo-1"}' | jq .
+
+# Expected after reversal: ACC1 balance = 100000, ACC2 balance = 0
+curl -s localhost:8080/accounts/$ACC1/balance | jq .
+curl -s localhost:8080/accounts/$ACC2/balance | jq .
+
+# 5. Optional: inspect ACC1 transaction history.
+curl -s "localhost:8080/accounts/$ACC1/transactions?page=1&limit=10" | jq .
+```
+
 ### Run locally (without Docker)
 
 ```bash
@@ -121,6 +184,35 @@ TEST_DB_DSN="postgres://postgres:postgres@localhost:5432/transaction_engine?sslm
   go test ./... -count=1 -run Integration
 ```
 
+## Performance
+
+### Engine layer (mock DB, no I/O)
+
+Measured with `go test ./internal/engine/ -bench=. -benchtime=5s -benchmem`:
+
+| Benchmark | ns/op | B/op | allocs/op | ops/sec |
+|---|---|---|---|---|
+| `BenchmarkEngine_Transfer` (1 goroutine) | ~1,940 | 1,451 | 25 | ~516 K |
+| `BenchmarkEngine_Transfer_Parallel` (12 goroutines) | ~3,100 | 1,457 | 25 | ~323 K |
+| `BenchmarkEngine_Deposit` (1 goroutine) | ~1,840 | 1,058 | 22 | ~543 K |
+
+### End-to-end HTTP (with PostgreSQL writes)
+
+Measured with `go run ./cmd/loadtest/` against a local PostgreSQL 16 instance:
+
+```
+Concurrency:  50 goroutines, 30 s
+Throughput:   583 req/s  (0 failures)
+
+Latency:
+  p50:  74 ms
+  p90: 195 ms
+  p95: 241 ms
+  p99: 339 ms
+```
+
+The engine layer alone sustains ~500 K operations/sec with zero database I/O. End-to-end latency is dominated by PostgreSQL pessimistic locking (`SELECT FOR UPDATE`) and fsync. Run `go run ./cmd/loadtest/ -help` to reproduce.
+
 ## Tech Stack
 
 - **Go 1.26** — `net/http` with method-based routing, `slog` structured logging, `context`-based tx propagation
@@ -131,6 +223,7 @@ TEST_DB_DSN="postgres://postgres:postgres@localhost:5432/transaction_engine?sslm
 
 ```
 cmd/server/main.go              # Entry point, wiring
+cmd/loadtest/main.go            # HTTP load tester (unique idempotency keys, latency percentiles)
 internal/
 ├── api/                         # HTTP handlers + middleware
 │   ├── handler.go              # 8 endpoints
